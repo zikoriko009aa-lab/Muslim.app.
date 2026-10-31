@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Muslim</title>
+<style>
+:root{--g:#0b6b3a;--g2:#e8f5ec;--gold:#c9a227;--bg:#fff;--txt:#14301f}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font-family:system-ui,"Noto Naskh Arabic",serif;padding-bottom:70px}
+header{background:var(--g);color:#fff;padding:calc(14px + env(safe-area-inset-top)) 16px 12px;text-align:center;font-size:20px;font-weight:700;border-bottom:3px solid var(--gold)}
+.tab{display:none;padding:12px}.tab.on{display:block}
+nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:#fff;border-top:1px solid #ddd;padding-bottom:env(safe-area-inset-bottom)}
+nav button{flex:1;padding:14px 4px;background:none;border:0;color:#5b6f63;font-size:15px}
+nav button.on{color:var(--g);font-weight:700;border-top:3px solid var(--gold)}
+.card{background:var(--g2);border-radius:12px;padding:12px 14px;margin:8px 0}
+.row{display:flex;justify-content:space-between;align-items:center}
+.next{background:var(--g);color:#fff;border:2px solid var(--gold)}
+.b{background:var(--gold);color:#222;border:0;border-radius:8px;padding:8px 14px;font-size:15px}
+.ayah{font-size:23px;line-height:2.3;text-align:justify;background:#fff;border:1px solid var(--gold)}
+.dhikr{font-size:20px;line-height:2;border-right:4px solid var(--gold)}
+.adj button{width:28px;height:28px;border-radius:50%;border:1px solid var(--g);background:#fff;color:var(--g)}
+small{opacity:.7}
+</style>
+</head>
+<body>
+<header>Muslim</header>
+
+<div id="prayer" class="tab on">
+  <div class="card"><div id="city">📍 ...</div><small id="hijri"></small></div>
+  <div id="times"></div>
+  <details class="card"><summary>تعديل الدقائق (مطابقة تقويم الأوقاف)</summary><div id="adj"></div></details>
+</div>
+
+<div id="quran" class="tab">
+  <audio id="player" controls style="width:100%"></audio>
+  <div id="surahs"></div><div id="ayahs"></div>
+</div>
+
+<div id="adhkar" class="tab">
+  <div class="row" style="gap:8px;margin-bottom:8px">
+    <button class="b" onclick="showAdhkar('sabah')">أذكار الصباح</button>
+    <button class="b" onclick="showAdhkar('masa')">أذكار المساء</button>
+    <button class="b" onclick="showAdhkar('dua')">أدعية</button>
+  </div>
+  <div id="adhkarList"></div>
+</div>
+
+<nav>
+  <button class="on" onclick="go('prayer',this)">الصلاة</button>
+  <button onclick="go('quran',this)">القرآن</button>
+  <button onclick="go('adhkar',this)">الأذكار</button>
+</nav>
+
+<script>
+function go(id,btn){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
+  document.getElementById(id).classList.add('on');
+  document.querySelectorAll('nav button').forEach(b=>b.classList.remove('on'));
+  btn.classList.add('on');
+}
+const P=()=>window.Capacitor?.Plugins||{};
+const NAMES={Fajr:'الفجر',Dhuhr:'الظهر',Asr:'العصر',Maghrib:'المغرب',Isha:'العشاء'};
+const store={get:k=>{try{return JSON.parse(localStorage.getItem(k))}catch(e){return null}},set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}};
+const adj=store.get('adj')||{Fajr:0,Dhuhr:0,Asr:0,Maghrib:0,Isha:0};
+
+/* ---------- أذونات عند فتح التطبيق + GPS ---------- */
+async function permissions(){
+  const {LocalNotifications:ln,Geolocation:geo}=P();
+  if(ln){
+    try{ if((await ln.requestPermissions()).display!=='granted') alert('خاص تسمح بالإشعارات باش يخدم الأذان'); }catch(e){}
+    try{ await ln.createChannel({id:'adhan',name:'الأذان',importance:5,sound:'adhan.mp3',vibration:true,visibility:1}); }catch(e){}
+    try{ await ln.createChannel({id:'adhkar',name:'الأذكار',importance:3}); }catch(e){}
+    try{ const s=await ln.checkExactNotificationSetting(); if(s.exact_alarm!=='granted') await ln.changeExactNotificationSetting(); }catch(e){}
+  }
+  if(geo){ try{await geo.requestPermissions()}catch(e){} }
+}
+function getPos(){
+  const def=store.get('pos')||{lat:33.5731,lng:-7.5898,name:'الدار البيضاء (افتراضي)'};
+  const ok=p=>{const v={lat:p.coords.latitude,lng:p.coords.longitude,name:'GPS ✓'};store.set('pos',v);return v};
+  return new Promise(async res=>{
+    const geo=P().Geolocation;
+    try{ if(geo) return res(ok(await geo.getCurrentPosition({enableHighAccuracy:true,timeout:10000}))); }catch(e){}
+    if(!navigator.geolocation) return res(def);
+    navigator.geolocation.getCurrentPosition(p=>res(ok(p)),()=>res(def),{timeout:8000,enableHighAccuracy:true});
+  });
+}
+
+/* ---------- المواقيت: طريقة وزارة الأوقاف المغربية (method 21) ---------- */
+async function loadMonth(pos,y,m){
+  const key=`pt-${y}-${m}-${pos.lat.toFixed(1)}-${pos.lng.toFixed(1)}`;
+  const c=store.get(key); if(c) return c;
+  const r=await fetch(`https://api.aladhan.com/v1/calendar/${y}/${m}?latitude=${pos.lat}&longitude=${pos.lng}&method=21`);
+  const d=(await r.json()).data; store.set(key,d); return d;
+}
+const clean=s=>s.split(' ')[0];
+async function getDays(pos,n=10){
+  const out=[],now=new Date();
+  for(let i=0;i<n;i++){
+    const d=new Date(now.getFullYear(),now.getMonth(),now.getDate()+i);
+    const day=(await loadMonth(pos,d.getFullYear(),d.getMonth()+1))[d.getDate()-1];
+    if(day) out.push({date:d,t:day.timings,hijri:day.date.hijri});
+  }
+  return out;
+}
+const at=(d,s,k)=>{const [h,m]=clean(s).split(':').map(Number);return new Date(d.getFullYear(),d.getMonth(),d.getDate(),h,m+(k?adj[k]:0),0)};
+const hm=d=>String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+
+function drawAdj(){
+  document.getElementById('adj').innerHTML=Object.keys(NAMES).map(k=>
+   `<div class="row adj" style="margin:6px 0"><span>${NAMES[k]}</span><span><button onclick="chg('${k}',-1)">−</button> <b>${adj[k]>0?'+':''}${adj[k]}</b> <button onclick="chg('${k}',1)">+</button></span></div>`).join('');
+}
+function chg(k,v){adj[k]+=v;store.set('adj',adj);drawAdj();init(true)}
+
+async function init(skipPerm){
+  if(!skipPerm) await permissions();
+  const pos=await getPos();
+  document.getElementById('city').textContent='📍 '+pos.name+` (${pos.lat.toFixed(2)}, ${pos.lng.toFixed(2)})`;
+  let days; try{days=await getDays(pos)}catch(e){document.getElementById('times').innerHTML='<div class="card">خاص الإنترنت مرة وحدة باش تتحمل المواقيت</div>';return}
+  const t0=days[0],h=t0.hijri;
+  document.getElementById('hijri').textContent=`${h.day} ${h.month.ar} ${h.year}`;
+  const now=new Date();let nx=false,html='';
+  for(const k of Object.keys(NAMES)){
+    const dt=at(t0.date,t0.t[k],k),isN=!nx&&dt>now;if(isN)nx=true;
+    html+=`<div class="card row ${isN?'next':''}"><b>${NAMES[k]}</b><span>${hm(dt)}</span></div>`;
+  }
+  html+=`<div class="card row"><span>الشروق</span><span>${clean(t0.t.Sunrise)}</span></div>`;
+  document.getElementById('times').innerHTML=html;
+  schedule(days);
+}
+
+/* ---------- جدولة الأذان تلقائيا ---------- */
+async function schedule(days){
+  const ln=P().LocalNotifications; if(!ln) return;
+  try{const p=await ln.getPending(); if(p.notifications.length) await ln.cancel({notifications:p.notifications});}catch(e){}
+  const list=[],now=new Date();let id=1;
+  days.forEach(day=>{
+    Object.keys(NAMES).forEach(k=>{
+      const w=at(day.date,day.t[k],k);
+      if(w>now) list.push({id:id++,title:'حان وقت الصلاة',body:'أذان '+NAMES[k],channelId:'adhan',sound:'adhan.mp3',schedule:{at:w,allowWhileIdle:true}});
+    });
+    [['Fajr','أذكار الصباح'],['Asr','أذكار المساء']].forEach(([k,t])=>{
+      const w=new Date(at(day.date,day.t[k],k).getTime()+20*60000);
+      if(w>now) list.push({id:id++,title:t,body:'لا تنسى أذكارك 🤍',channelId:'adhkar',schedule:{at:w,allowWhileIdle:true}});
+    });
+  });
+  try{await ln.schedule({notifications:list})}catch(e){}
+}
+
+/* ---------- القرآن: 114 سورة ---------- */
+const SURAHS="الفاتحة،البقرة،آل عمران،النساء،المائدة،الأنعام،الأعراف،الأنفال،التوبة،يونس،هود،يوسف،الرعد،إبراهيم،الحجر،النحل،الإسراء،الكهف،مريم،طه،الأنبياء،الحج،المؤمنون،النور،الفرقان،الشعراء،النمل،القصص،العنكبوت،الروم،لقمان،السجدة،الأحزاب،سبأ،فاطر،يس،الصافات،ص،الزمر،غافر،فصلت،الشورى،الزخرف،الدخان،الجاثية،الأحقاف،محمد،الفتح،الحجرات،ق،الذاريات،الطور،النجم،القمر،الرحمن،الواقعة،الحديد،المجادلة،الحشر،الممتحنة،الصف،الجمعة،المنافقون،التغابن،الطلاق،التحريم،الملك،القلم،الحاقة،المعارج،نوح،الجن،المزمل،المدثر،القيامة،الإنسان،المرسلات،النبأ،النازعات،عبس،التكوير،الانفطار،المطففين،الانشقاق،البروج،الطارق،الأعلى،الغاشية،الفجر،البلد،الشمس،الليل،الضحى،الشرح،التين،العلق،القدر،البينة،الزلزلة،العاديات،القارعة،التكاثر،العصر،الهمزة،الفيل،قريش،الماعون،الكوثر،الكافرون،النصر،المسد،الإخلاص،الفلق،الناس".split('،');
+function drawSurahs(){
+  document.getElementById('surahs').innerHTML=SURAHS.map((s,i)=>
+   `<div class="card row" onclick="openSurah(${i+1})"><span>${i+1}. سورة ${s}</span><small>▶ استماع / قراءة</small></div>`).join('');
+}
+let QURAN=null;
+async function cacheQuran(){ // تحميل المصحف كاملا مرة وحدة للقراءة بلا إنترنت
+  if(store.get('quranFull')) return;
+  try{const r=await fetch('https://api.alquran.cloud/v1/quran/quran-uthmani');
+    const s=(await r.json()).data.surahs.map(x=>x.ayahs.map(a=>a.text));
+    store.set('quranFull',s);}catch(e){}
+}
+async function openSurah(n){
+  const p=document.getElementById('player');
+  p.src=`https://cdn.islamic.network/quran/audio-surah/128/ar.alafasy/${n}.mp3`;p.play().catch(()=>{});
+  let ay=(store.get('quranFull')||[])[n-1];
+  if(!ay){try{const r=await fetch(`https://api.alquran.cloud/v1/surah/${n}/quran-uthmani`);ay=(await r.json()).data.ayahs.map(a=>a.text)}catch(e){ay=['خاص الإنترنت مرة وحدة لتحميل النص']}}
+  document.getElementById('surahs').style.display='none';
+  document.getElementById('ayahs').innerHTML=`<button class="b" onclick="backS()">← السور</button><h3 style="text-align:center;color:var(--g)">سورة ${SURAHS[n-1]}</h3><div class="card ayah">`+ay.map((t,i)=>`${t} ﴿${i+1}﴾`).join(' ')+`</div>`;
+  window.scrollTo(0,0);
+}
+function backS(){document.getElementById('ayahs').innerHTML='';document.getElementById('surahs').style.display='block'}
+
+/* ---------- الأذكار ---------- */
+const ADHKAR={
+ sabah:['أَصْبَحْنَا وَأَصْبَحَ الْمُلْكُ لِلَّهِ، وَالْحَمْدُ لِلَّهِ، لَا إِلَهَ إِلَّا اللَّهُ وَحْدَهُ لَا شَرِيكَ لَهُ.','اللَّهُمَّ بِكَ أَصْبَحْنَا، وَبِكَ أَمْسَيْنَا، وَبِكَ نَحْيَا، وَبِكَ نَمُوتُ، وَإِلَيْكَ النُّشُورُ.','سُبْحَانَ اللَّهِ وَبِحَمْدِهِ (100 مرة).','بِسْمِ اللَّهِ الَّذِي لَا يَضُرُّ مَعَ اسْمِهِ شَيْءٌ فِي الْأَرْضِ وَلَا فِي السَّمَاءِ وَهُوَ السَّمِيعُ الْعَلِيمُ (3 مرات).','آية الكرسي، و المعوذات (الإخلاص، الفلق، الناس) 3 مرات.'],
+ masa:['أَمْسَيْنَا وَأَمْسَى الْمُلْكُ لِلَّهِ، وَالْحَمْدُ لِلَّهِ، لَا إِلَهَ إِلَّا اللَّهُ وَحْدَهُ لَا شَرِيكَ لَهُ.','اللَّهُمَّ بِكَ أَمْسَيْنَا، وَبِكَ أَصْبَحْنَا، وَبِكَ نَحْيَا، وَبِكَ نَمُوتُ، وَإِلَيْكَ الْمَصِيرُ.','أَعُوذُ بِكَلِمَاتِ اللَّهِ التَّامَّاتِ مِنْ شَرِّ مَا خَلَقَ (3 مرات).','سُبْحَانَ اللَّهِ وَبِحَمْدِهِ (100 مرة).','آية الكرسي، و المعوذات 3 مرات.'],
+ dua:['رَبَّنَا آتِنَا فِي الدُّنْيَا حَسَنَةً وَفِي الْآخِرَةِ حَسَنَةً وَقِنَا عَذَابَ النَّارِ.','رَبِّ اشْرَحْ لِي صَدْرِي وَيَسِّرْ لِي أَمْرِي.','اللَّهُمَّ إِنِّي أَسْأَلُكَ الْعَفْوَ وَالْعَافِيَةَ فِي الدُّنْيَا وَالْآخِرَةِ.','لَا إِلَهَ إِلَّا أَنْتَ سُبْحَانَكَ إِنِّي كُنْتُ مِنَ الظَّالِمِينَ.','يَا مُقَلِّبَ الْقُلُوبِ ثَبِّتْ قَلْبِي عَلَى دِينِكَ.']};
+function showAdhkar(k){document.getElementById('adhkarList').innerHTML=ADHKAR[k].map(t=>`<div class="card dhikr">${t}</div>`).join('')}
+
+showAdhkar('sabah');drawSurahs();drawAdj();init();cacheQuran();
+</script>
+</body>
+</html>
